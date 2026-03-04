@@ -2,6 +2,95 @@
 title: "draft"
 format: html
 editor: visual
+editor_options: 
+  chunk_output_type: inline
 ---
 
-## 
+
+### Setup: Load libraries 
+
+```{r}
+library(tidyverse)
+library(here)
+library(janitor)
+library(jtools)
+
+library(gtsummary)
+library(gt)
+
+library(MatchIt) # matching
+library(cobalt)  # balance + love plots
+
+library(fixest) # fast fixed effects
+library(scales) # plotting
+
+```
+
+### Part 1: Study Background 
+
+
+### Part 2: Matching 
+```{r}
+match_hsr <- read_csv(here("data/xie2025_simulated_panel.csv")) %>%
+  mutate(region = as.factor(region),
+                                                                           lat_band = as.factor(lat_band),
+                                                                           city_scale = as.factor(city_scale),
+                                                                           hsr_open_year = na_if(hsr_open_year, Inf))
+
+view(match_hsr)
+```
+
+### Check imbalance (before matching)
+
+```{r}
+match_hsr %>%
+    select(hsr, gdp_growth_pct, share_primary_pct, share_secondary_pct, population_10k , urban_road_10k_m2, pm25,green_coverage_pct, light, passenger_flow_10m) %>% 
+    tbl_summary(
+        by = hsr,
+        statistic = list(
+            all_continuous() ~ "{mean} ({sd})",
+            all_categorical() ~ "{n} ({p})"
+        )
+    ) 
+```
+
+### Conduct matching estimation using the {`MatchIt`} package:
+
+```{r}
+set.seed(2412026)
+
+match_model <- matchit(hsr ~ gdp_growth_pct + share_primary_pct + 
+                         share_secondary_pct + population_10k + 
+                         urban_road_10k_m2 + pm25,green_coverage_pct + 
+                         light + passenger_flow_10m + 
+                         longitude + latitude + wind_speed + precip_mm + 
+                         humidity_pct + temperature_c, 
+  data = match_hsr %>% 
+    drop_na(gdp_growth_pct, share_primary_pct, share_secondary_pct, 
+            population_10k, urban_road_10k_m2, pm25,green_coverage_pct, 
+            light, passenger_flow_10m, longitude, latitude, wind_speed, precip_mm, humidity_pct, temperature_c), 
+  method = "nearest",       # Nearest neighbor matching
+  distance = "mahalanobis", # Mahalanobis distance
+  ratio = 1,                # Match one control unit to one treatment unit (1:1 matching)
+  replace = FALSE           # Control observations are not replaced
+) 
+# Extract matched data
+matched_data <- match.data(match_model)
+
+```
+
+```{r}
+summary(match_model)
+```
+
+```{r}
+new_names <- data.frame(
+    old = c(population_10k, precip_mm,temperature_c, urban_road_10k_m2, humidity_pct,pm25, green_coverage_pct, gdp_growth_pct, share_secondary_pct, longitude, wind_speed, share_primary_pct, latitude),
+    new = c("Population (10k)", "Precipitation", "Temperature", "Urban road", "Humidity","PM2.5", "Green coverage", "GDP growth","GPD in secondary sector", "Longitude", "Windy speed", "GPD in primary sector", "Latitude"))
+
+# Love plot
+love.plot(match_model, stats = "mean.diffs",
+          thresholds = c(m = 0.1)) #,
+          #var.names = new_names)
+```
+

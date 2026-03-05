@@ -26,71 +26,104 @@ library(scales) # plotting
 
 ```
 
-### Part 1: Study Background 
+# Study Background 
 
+## 1. Data Description
+After the code block(s) that read in and clean the data, add some notes covering:
 
-### Part 2: Matching 
+What does each row represent? What is the unit of observation?
+What are the key outcome, treatment, and control variables?
+Any notable data cleaning decisions (dropped observations, constructed variables, etc.)
+Sample size, time period, and geographic scope
+
 ```{r}
-match_hsr <- read_csv(here("data/xie2025_simulated_panel.csv")) %>%
-  mutate(region = as.factor(region),
-                                                                           lat_band = as.factor(lat_band),
-                                                                           city_scale = as.factor(city_scale),
-                                                                           hsr_open_year = na_if(hsr_open_year, Inf))
+hsr <- read_csv(here("data/xie2025_simulated_panel.csv")) %>%
+  mutate(region = as.factor(region), 
+         lat_band = as.factor(lat_band),
+         city_scale = as.factor(city_scale), 
+         hsr_open_year = na_if(hsr_open_year, Inf)) # change Inf to Na
 
 view(match_hsr)
 ```
+2. Annotated Replication
+After each subsequent code block, add some notes covering:
 
-### Check imbalance (before matching)
+What does the code accomplish? (summary of the procedure or model)
+What is the causal identification approach? (e.g., DiD, RDD, IV, matching)
+What assumptions must hold for the estimates to be causally valid?
+Are there any signs in the output that those assumptions are or are not satisfied?
 
-```{r}
-match_hsr %>%
-    select(hsr, gdp_growth_pct, share_primary_pct, share_secondary_pct, population_10k , urban_road_10k_m2, pm25,green_coverage_pct, light, passenger_flow_10m) %>% 
-    tbl_summary(
-        by = hsr,
-        statistic = list(
-            all_continuous() ~ "{mean} ({sd})",
-            all_categorical() ~ "{n} ({p})"
-        )
-    ) 
-```
 
-### Conduct matching estimation using the {`MatchIt`} package:
+# Staggered DID - Impact of HSR on Avian Species Richness
 
 ```{r}
-set.seed(2412026)
+# Column 1: Economic variables
+m1 <- feols(
+  avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
-match_model <- matchit(hsr ~ gdp_growth_pct + share_primary_pct + 
-                         share_secondary_pct + population_10k + 
-                         urban_road_10k_m2 + pm25,green_coverage_pct + 
-                         light + passenger_flow_10m + 
-                         longitude + latitude + wind_speed + precip_mm + 
-                         humidity_pct + temperature_c, 
-  data = match_hsr %>% 
-    drop_na(gdp_growth_pct, share_primary_pct, share_secondary_pct, 
-            population_10k, urban_road_10k_m2, pm25,green_coverage_pct, 
-            light, passenger_flow_10m, longitude, latitude, wind_speed, precip_mm, humidity_pct, temperature_c), 
-  method = "nearest",       # Nearest neighbor matching
-  distance = "mahalanobis", # Mahalanobis distance
-  ratio = 1,                # Match one control unit to one treatment unit (1:1 matching)
-  replace = FALSE           # Control observations are not replaced
-) 
-# Extract matched data
-matched_data <- match.data(match_model)
+# Column 2: + Demographic
+m2 <- feols(
+  avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct +
+    population_10k |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
+# Column 3: + Infrastructure
+m3 <- feols(
+  avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct +
+    population_10k + urban_road_10k_m2 |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
+
+# Column 4: + Environmental
+m4 <- feols(
+  avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct +
+    population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
+
+# Column 5: Full controls (preferred specification)
+m5 <- feols(
+  avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct +
+    population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct +
+    wind_speed + precip_mm + humidity_pct + temperature_c |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 ```
+
 
 ```{r}
-summary(match_model)
+# --- Results table ---
+etable(
+  m1, m2, m3, m4, m5,
+  keep    = "hsr",
+  headers = c("Economic", "+ Demographic", "+ Infrastructure", "+ Environmental", "+ Weather (Full)"),
+  digits  = 4,
+  fitstat = c("n", "r2")
+)
 ```
+
 
 ```{r}
-new_names <- data.frame(
-    old = c(population_10k, precip_mm,temperature_c, urban_road_10k_m2, humidity_pct,pm25, green_coverage_pct, gdp_growth_pct, share_secondary_pct, longitude, wind_speed, share_primary_pct, latitude),
-    new = c("Population (10k)", "Precipitation", "Temperature", "Urban road", "Humidity","PM2.5", "Green coverage", "GDP growth","GPD in secondary sector", "Longitude", "Windy speed", "GPD in primary sector", "Latitude"))
-
-# Love plot
-love.plot(match_model, stats = "mean.diffs",
-          thresholds = c(m = 0.1)) #,
-          #var.names = new_names)
+# --- Effect size: coef / SD(outcome), as reported in paper ---
+sd_outcome <- sd(hsr$avian_increment_ratio_natl, na.rm = TRUE)
+effect_size <- coef(m5)["hsr"] / sd_outcome
+cat(sprintf("\nEffect size (col 5): %.1f%% of 1 SD\n", abs(effect_size) * 100))
 ```
 
+
+3. Critical Evaluation
+Somewhere in the write-up (or as a closing section), address each of the following:
+
+Causal identification: Is the identification strategy credible? What would have to be true for the estimates to be causal?
+Statistical assumptions: Are key assumptions (parallel trends, exclusion restriction, etc.) tested or defended? Do you find the evidence convincing?
+Sampling & external validity: Who is in the sample? To whom can results be generalized?
+Measurement: Are the outcome and treatment variables measured accurately and without systematic bias?
+Other limitations: Anything else that affects how much weight you would put on the study’s conclusions?

@@ -2,6 +2,310 @@
 title: "draft"
 format: html
 editor: visual
+editor_options: 
+  chunk_output_type: console
+#warning: false
+#message: false
 ---
 
-## 
+### Setup: Load libraries
+
+```{r,results='hide'}
+library(tidyverse)
+library(here)
+library(janitor)
+library(jtools)
+
+library(gtsummary)
+library(gt)
+
+library(MatchIt) # matching
+library(cobalt)  # balance + love plots
+
+library(fixest) # fast fixed effects
+library(scales) # plotting
+
+```
+
+# Study Background
+
+## 1. Data Description
+
+```{r}
+hsr_data <- read_csv(here("data", "xie2025_simulated_panel.csv")) %>%
+  mutate(region = as.factor(region), 
+         lat_band = as.factor(lat_band),
+         city_scale = as.factor(city_scale), 
+         hsr_open_year = na_if(
+           hsr_open_year, Inf)) # Treat Inf as missing value
+
+glimpse(hsr_data)
+```
+
+- Each row in this dataset represents a city–year observation.
+- The unit of analysis is a prefecture-level city observed in a specific year. 
+- The dataset covers multiple cities across several years
+- The dataset forms a panel dataset tracks changes in bird species richness over time as high-speed rail (HSR) infrastructure expands. 
+- The key outcome variable is `avian_increment_ratio_natl`, which measures the annual increase in bird species richness in a city normalized by the national increase. 
+- The main treatment variable is `hsr`, an indicator equal to 1 if high-speed rail is operating in that city-year and 0 otherwise. 
+
+During data preparation, several categorical variables (`region`, `lat_band`, and `city_scale`) were converted to factors to ensure proper handling in modeling and grouping operations.
+
+Additionally, `hsr_open_year` values equal to `Inf` were converted to NA to represent cities that never receive HSR during the study period. The simulated dataset contains observations for multiple Chinese cities over the study period used in the original analysis, providing the panel structure needed to estimate the staggered difference-in-differences model.
+
+# Staggered DID - Impact of HSR on Avian Species Richness
+
+We estimated the study’s **baseline staggered Difference-in-Differences (DiD) models** using a two-way fixed effects specification (city and year fixed effects) to replicate the logic of Table 5. Each model estimates the association between **HSR exposure (`hsr`)** and the outcome **`avian_increment_ratio_natl`** while progressively adding sets of covariates: (1) economic structure, (2) demographic size, (3) infrastructure, (4) environmental quality, and (5) meteorological conditions. 
+
+The **causal identification approach**
+- DiD with staggered treatment. 
+- Cities adopt HSR in different years, so the model must compare changes in treated cities before vs. after HSR begins operating relative to cities that are not yet treated in the same years
+- The model controls for time-invariant city characteristics (city fixed effects) and common national trends (year fixed effects). 
+
+## Key Assumptions - 
+For the DiD estimates to be causally valid, key assumptions must hold: 
+- **parallel trends** (in the absence of HSR, treated and control cities would have followed similar trends in the outcome), no major **time-varying confounders** that coincide with HSR rollout and independently affect bird richness, and no large **spillovers** that would indirectly affect “control” cities. This specific code block does not directly test those assumptions; it produces the treatment-effect estimates under each specification. However, we can look for indirect signals of credibility in later output—especially whether the estimated HSR effect is **stable in sign and magnitude across m1–m5** as controls are added. If the coefficient changes dramatically when adding key covariates, that would suggest the estimate may be sensitive to confounding; if it remains similar across specifications, that provides some reassurance (though it does not prove parallel trends on its own).
+```{r}
+# Column 1: Economic variables
+m1 <- feols(avian_increment_ratio_natl ~ hsr + gdp_growth_pct + share_primary_pct + share_secondary_pct | city_id + year,
+            data = hsr_data, 
+            cluster = ~city_id)
+
+# Column 2: Demographic factors
+m2 <- feols(avian_increment_ratio_natl ~ hsr + gdp_growth_pct +
+              share_primary_pct + share_secondary_pct +
+              population_10k | city_id + year,
+            data = hsr_data, 
+            cluster = ~city_id)
+
+# Column 3: Infrastructure variables
+m3 <- feols(avian_increment_ratio_natl ~ hsr + gdp_growth_pct +
+              share_primary_pct + share_secondary_pct +
+              population_10k + urban_road_10k_m2 |
+              city_id + year,
+            data = hsr_data, 
+            cluster = ~city_id)
+
+# Column 4: Environmental factors
+m4 <- feols(avian_increment_ratio_natl ~ hsr + gdp_growth_pct +
+              share_primary_pct + share_secondary_pct +
+              population_10k + urban_road_10k_m2 + pm25 +
+              green_coverage_pct | city_id + year,
+            data = hsr, 
+            cluster = ~city_id)
+
+# Column 5: Full controls (the preferred specification)
+m5 <- feols(avian_increment_ratio_natl ~ hsr + gdp_growth_pct +
+              share_primary_pct + share_secondary_pct +
+              population_10k + urban_road_10k_m2 + pm25 + 
+              green_coverage_pct + wind_speed + precip_mm +
+              humidity_pct + temperature_c | city_id + year,
+            data = hsr, 
+            cluster = ~city_id)
+```
+
+The model  includes control variables capturing:
+- economic conditions (`gdp_growth_pct`, `share_primary_pct`, `share_secondary_pct`), 
+- demographic characteristics (`population_10k`), 
+- infrastructure development (`urban_road_10k_m2`)
+- environmental conditions (`pm25`, `green_coverage_pct`)
+- meteorological factors (`wind_speed`, `precip_mm`, `humidity_pct`, `temperature_c`). 
+
+
+
+```{r}
+# --- Results table ---
+etable(
+  m1, m2, m3, m4, m5,
+  keep    = "hsr",
+  headers = c("Economic", "+ Demographic", "+ Infrastructure", "+ Environmental", "+ Weather (Full)"),
+  digits  = 4,
+  fitstat = c("n", "r2")
+)
+```
+
+```{r}
+# --- Effect size: coef / SD(outcome), as reported in paper ---
+sd_outcome <- sd(hsr$avian_increment_ratio_natl, na.rm = TRUE)
+effect_size <- coef(m5)["hsr"] / sd_outcome
+cat(sprintf("\nEffect size (col 5): %.1f%% of 1 SD\n", abs(effect_size) * 100))
+```
+
+# Event study/ parallel trends plot
+
+```{r}
+# event_time is already in the data; bin tails at ±5 to avoid sparse cells
+hsr_es <- hsr |>
+  mutate(event_time_binned = case_when(
+    is.na(event_time) ~ NA_real_,   # never-treated cities (control group)
+    event_time < -5   ~ -5,
+    event_time >  5   ~  5,
+    TRUE              ~ event_time
+  ))
+
+# Full controls, two-way FE, clustered SEs
+# i(event_time_binned, ref = -3): creates dummies for each relative year,
+# omitting -3 as the reference period
+es_model <- feols(
+  avian_increment_ratio_natl ~
+    i(event_time_binned, ref = -3) +
+    gdp_growth_pct + share_primary_pct + share_secondary_pct +
+    population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct +
+    wind_speed + precip_mm + humidity_pct + temperature_c |
+    city_id + year,
+  data    = hsr_es,
+  cluster = ~city_id
+)
+
+# --- Extract coefficients and CIs ---
+es_coefs <- broom::tidy(es_model, conf.int = TRUE) |>
+  filter(str_detect(term, "event_time_binned")) |>
+  mutate(event_time = as.numeric(str_extract(term, "-?\\d+"))) |>
+  # Add the reference year back in as zero
+  bind_rows(tibble(event_time = -3, estimate = 0, conf.low = 0, conf.high = 0)) |>
+  arrange(event_time)
+
+# --- Plot ---
+es_plot <- es_coefs |>
+  ggplot(aes(x = event_time, y = estimate)) +
+  # Shade pre-treatment region
+  annotate("rect", xmin = -5.5, xmax = -0.5,
+           ymin = -Inf, ymax = Inf, alpha = 0.04, fill = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = -0.5, linetype = "dotted",
+             color = "steelblue", linewidth = 0.7) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high),
+              alpha = 0.2, fill = "steelblue") +
+  geom_line(color = "steelblue", linewidth = 0.8) +
+  geom_point(color = "steelblue", size = 2.5) +
+  # Annotate reference year
+  annotate("text", x = -3, y = 0.0015, label = "ref", size = 3,
+           color = "grey40") +
+  # Annotate HSR opening
+  annotate("text", x = 0.1, y = max(es_coefs$conf.high) * 0.9,
+           label = "HSR opens →", hjust = 0, size = 3.5, color = "steelblue") +
+  scale_x_continuous(breaks = -5:5) +
+  labs(
+    title    = "Event Study: Effect of HSR on Bird Species Increment",
+    subtitle = "Coefficients relative to 3 years before HSR opening | 95% CI shaded\nPre-treatment estimates near zero support the parallel trends assumption",
+    x        = "Years Relative to HSR Opening",
+    y        = "Δ Avian Increment Ratio (National)",
+    caption  = "Two-way FE (city + year), full controls, SEs clustered at city level."
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title    = element_text(face = "bold"),
+    plot.subtitle = element_text(color = "grey40", size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+#ggsave("hsr_event_study.png", es_plot, width = 9, height = 5.5, dpi = 200)
+
+# --- Quick numeric check: are pre-treatment estimates jointly zero? ---
+# Tests the parallel trends assumption formally
+pre_terms <- es_coefs |>
+  filter(event_time < -3) |>
+  pull(event_time) |>
+  (\(x) paste0("event_time_binned::", x))()
+
+if (length(pre_terms) > 0) {
+  joint_test <- wald(es_model, pre_terms)
+  cat("\nJoint test of pre-treatment coefficients (H0: all zero):\n")
+  print(joint_test)
+}
+
+```
+
+\`\`\`{r} \# Register controls shorthand for use in feols formulas setFixest_fml(..controls = \~ gdp_growth_pct + share_primary_pct + share_secondary_pct + population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct + wind_speed + precip_mm + humidity_pct + temperature_c)
+
+# Preferred spec (col 1 benchmark) — reference point for all comparisons
+
+m_preferred \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+
+# =============================================================================
+
+# TABLE 16: Robustness checks on the preferred specification
+
+# =============================================================================
+
+# --- Col 2: Log transformation of national-level DV ---
+
+# Add small constant to handle zeros before logging
+
+m_log \<- feols( log(avian_increment_ratio_natl + 1e-6) \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+
+# --- Col 3: Replace DV with province-level ratio ---
+
+m_prov \<- feols( avian_increment_ratio_prov \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+
+# --- Col 4: Log of province-level ratio ---
+
+m_prov_log \<- feols( log(avian_increment_ratio_prov + 1e-6) \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+
+# --- Col 5: Exclude city-years before HSR ever opens (pre-operation years) ---
+
+# Keep only: never-treated cities (all years) + treated cities from open_year onward
+
+hsr_post_only \<- hsr \|\> filter(is.na(hsr_open_year) \| year \>= hsr_open_year)
+
+m_post_only \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr_post_only, cluster = \~city_id )
+
+# --- Col 6: Add province fixed effects ---
+
+m_prov_fe \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year + province_id, data = hsr, cluster = \~city_id )
+
+# --- Col 7: Cluster SEs at city level (same as preferred but explicit) ---
+
+m_cluster_city \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id \# already city-clustered; shown for clarity )
+
+# --- Col 8: Two-way clustering (city + year) ---
+
+m_cluster_2way \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id + year )
+
+# --- Col 9: Control for number of birdwatchers (H) ---
+
+m_birdwatchers \<- feols( avian_increment_ratio_natl \~ hsr + H + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+
+cat("=== Table 16: Robustness Checks ===\n\n") etable( m_preferred, m_log, m_prov, m_prov_log, m_post_only, m_prov_fe, m_cluster_city, m_cluster_2way, m_birdwatchers, keep = "hsr", headers = c("Preferred", "Log DV", "Prov. ratio", "Log prov. ratio", "Excl. pre-op", "Province FEs", "Cluster city", "2-way cluster", "Birdwatchers"), digits = 4, fitstat = c("n", "r2") )
+
+# =============================================================================
+
+# TABLE 9: PSM-DID
+
+# Match treated and control cities on pre-treatment covariates,
+
+# then re-run the DID on the matched sample
+
+# =============================================================================
+
+# PSM requires one observation per city (use pre-treatment means as baseline)
+
+# Match on: economic, demographic, infrastructure, environmental, and geography
+
+city_baseline \<- hsr \|\> filter(year \< min(hsr_open_year, na.rm = TRUE)) \|\> \# pre-HSR era only group_by(city_id) \|\> summarise( treated_city = first(treated_city), gdp_growth_pct = mean(gdp_growth_pct, na.rm = TRUE), share_primary_pct = mean(share_primary_pct, na.rm = TRUE), share_secondary_pct= mean(share_secondary_pct,na.rm = TRUE), population_10k = mean(population_10k, na.rm = TRUE), urban_road_10k_m2 = mean(urban_road_10k_m2, na.rm = TRUE), pm25 = mean(pm25, na.rm = TRUE), green_coverage_pct = mean(green_coverage_pct, na.rm = TRUE), wind_speed = mean(wind_speed, na.rm = TRUE), precip_mm = mean(precip_mm, na.rm = TRUE), humidity_pct = mean(humidity_pct, na.rm = TRUE), temperature_c = mean(temperature_c, na.rm = TRUE), longitude = first(longitude), latitude = first(latitude), .groups = "drop" ) \|\> drop_na()
+
+# Fit propensity score model
+
+psm_formula \<- treated_city \~ gdp_growth_pct + share_primary_pct + share_secondary_pct + population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct + wind_speed + precip_mm + humidity_pct + temperature_c + longitude + latitude
+
+# Four matching methods to mirror the paper
+
+run_psm_did \<- function(method, ...) { match_out \<- matchit( psm_formula, data = city_baseline, method = method, distance = "glm", ... )
+
+matched_ids \<- match.data(match_out)\$city_id hsr_matched \<- hsr \|\> filter(city_id %in% matched_ids)
+
+feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr_matched, cluster = \~city_id ) }
+
+# k-nearest neighbors (k=3, k=5)
+
+m_nn3 \<- run_psm_did("nearest", ratio = 3) m_nn5 \<- run_psm_did("nearest", ratio = 5)
+
+# Radius matching: nearest neighbor within 0.05 SD of propensity score
+
+m_radius \<- run_psm_did("nearest", caliper = 0.05)
+
+# Optimal full matching (closest equivalent to kernel matching)
+
+m_kernel \<- run_psm_did("full")
+
+cat("\n=== Table 9: PSM-DID ===\n\n") etable( m_preferred, m_nn3, m_nn5, m_radius, m_kernel, keep = "hsr", headers = c("Full sample", "k-NN (k=3)", "k-NN (k=5)", "Radius", "Kernel (approx)"), digits = 4, fitstat = c("n", "r2") )

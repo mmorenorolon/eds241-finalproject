@@ -215,97 +215,180 @@ if (length(pre_terms) > 0) {
 }
 
 ```
-
-\`\`\`{r} \# Register controls shorthand for use in feols formulas setFixest_fml(..controls = \~ gdp_growth_pct + share_primary_pct + share_secondary_pct + population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct + wind_speed + precip_mm + humidity_pct + temperature_c)
+```{r}
+# Register controls shorthand for use in feols formulas
+setFixest_fml(..controls = ~ gdp_growth_pct + share_primary_pct + share_secondary_pct +
+  population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct +
+  wind_speed + precip_mm + humidity_pct + temperature_c)
 
 # Preferred spec (col 1 benchmark) — reference point for all comparisons
-
-m_preferred \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+m_preferred <- feols(
+  avian_increment_ratio_natl ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
 # =============================================================================
-
 # TABLE 16: Robustness checks on the preferred specification
-
 # =============================================================================
 
 # --- Col 2: Log transformation of national-level DV ---
-
 # Add small constant to handle zeros before logging
-
-m_log \<- feols( log(avian_increment_ratio_natl + 1e-6) \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+m_log <- feols(
+  log(avian_increment_ratio_natl + 1e-6) ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
 # --- Col 3: Replace DV with province-level ratio ---
-
-m_prov \<- feols( avian_increment_ratio_prov \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+m_prov <- feols(
+  avian_increment_ratio_prov ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
 # --- Col 4: Log of province-level ratio ---
-
-m_prov_log \<- feols( log(avian_increment_ratio_prov + 1e-6) \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
+m_prov_log <- feols(
+  log(avian_increment_ratio_prov + 1e-6) ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
 # --- Col 5: Exclude city-years before HSR ever opens (pre-operation years) ---
-
 # Keep only: never-treated cities (all years) + treated cities from open_year onward
+hsr_post_only <- hsr |>
+  filter(is.na(hsr_open_year) | year >= hsr_open_year)
 
-hsr_post_only \<- hsr \|\> filter(is.na(hsr_open_year) \| year \>= hsr_open_year)
-
-m_post_only \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr_post_only, cluster = \~city_id )
+m_post_only <- feols(
+  avian_increment_ratio_natl ~ hsr + ..controls |
+    city_id + year,
+  data = hsr_post_only, cluster = ~city_id
+)
 
 # --- Col 6: Add province fixed effects ---
-
-m_prov_fe \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year + province_id, data = hsr, cluster = \~city_id )
+m_prov_fe <- feols(
+  avian_increment_ratio_natl ~ hsr + ..controls |
+    city_id + year + province_id,
+  data = hsr, cluster = ~city_id
+)
 
 # --- Col 7: Cluster SEs at city level (same as preferred but explicit) ---
-
-m_cluster_city \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id \# already city-clustered; shown for clarity )
+m_cluster_city <- feols(
+  avian_increment_ratio_natl ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id   # already city-clustered; shown for clarity
+)
 
 # --- Col 8: Two-way clustering (city + year) ---
-
-m_cluster_2way \<- feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr, cluster = \~city_id + year )
+m_cluster_2way <- feols(
+  avian_increment_ratio_natl ~ hsr + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id + year
+)
 
 # --- Col 9: Control for number of birdwatchers (H) ---
+m_birdwatchers <- feols(
+  avian_increment_ratio_natl ~ hsr + H + ..controls |
+    city_id + year,
+  data = hsr, cluster = ~city_id
+)
 
-m_birdwatchers \<- feols( avian_increment_ratio_natl \~ hsr + H + ..controls \| city_id + year, data = hsr, cluster = \~city_id )
-
-cat("=== Table 16: Robustness Checks ===\n\n") etable( m_preferred, m_log, m_prov, m_prov_log, m_post_only, m_prov_fe, m_cluster_city, m_cluster_2way, m_birdwatchers, keep = "hsr", headers = c("Preferred", "Log DV", "Prov. ratio", "Log prov. ratio", "Excl. pre-op", "Province FEs", "Cluster city", "2-way cluster", "Birdwatchers"), digits = 4, fitstat = c("n", "r2") )
+cat("=== Table 16: Robustness Checks ===\n\n")
+etable(
+  m_preferred, m_log, m_prov, m_prov_log,
+  m_post_only, m_prov_fe, m_cluster_city, m_cluster_2way, m_birdwatchers,
+  keep    = "hsr",
+  headers = c("Preferred", "Log DV", "Prov. ratio", "Log prov. ratio",
+              "Excl. pre-op", "Province FEs", "Cluster city",
+              "2-way cluster", "Birdwatchers"),
+  digits  = 4,
+  fitstat = c("n", "r2")
+)
 
 # =============================================================================
-
 # TABLE 9: PSM-DID
-
 # Match treated and control cities on pre-treatment covariates,
-
 # then re-run the DID on the matched sample
-
 # =============================================================================
 
 # PSM requires one observation per city (use pre-treatment means as baseline)
-
 # Match on: economic, demographic, infrastructure, environmental, and geography
-
-city_baseline \<- hsr \|\> filter(year \< min(hsr_open_year, na.rm = TRUE)) \|\> \# pre-HSR era only group_by(city_id) \|\> summarise( treated_city = first(treated_city), gdp_growth_pct = mean(gdp_growth_pct, na.rm = TRUE), share_primary_pct = mean(share_primary_pct, na.rm = TRUE), share_secondary_pct= mean(share_secondary_pct,na.rm = TRUE), population_10k = mean(population_10k, na.rm = TRUE), urban_road_10k_m2 = mean(urban_road_10k_m2, na.rm = TRUE), pm25 = mean(pm25, na.rm = TRUE), green_coverage_pct = mean(green_coverage_pct, na.rm = TRUE), wind_speed = mean(wind_speed, na.rm = TRUE), precip_mm = mean(precip_mm, na.rm = TRUE), humidity_pct = mean(humidity_pct, na.rm = TRUE), temperature_c = mean(temperature_c, na.rm = TRUE), longitude = first(longitude), latitude = first(latitude), .groups = "drop" ) \|\> drop_na()
+city_baseline <- hsr |>
+  filter(year < min(hsr_open_year, na.rm = TRUE)) |>   # pre-HSR era only
+  group_by(city_id) |>
+  summarise(
+    treated_city       = first(treated_city),
+    gdp_growth_pct     = mean(gdp_growth_pct,     na.rm = TRUE),
+    share_primary_pct  = mean(share_primary_pct,  na.rm = TRUE),
+    share_secondary_pct= mean(share_secondary_pct,na.rm = TRUE),
+    population_10k     = mean(population_10k,     na.rm = TRUE),
+    urban_road_10k_m2  = mean(urban_road_10k_m2,  na.rm = TRUE),
+    pm25               = mean(pm25,               na.rm = TRUE),
+    green_coverage_pct = mean(green_coverage_pct, na.rm = TRUE),
+    wind_speed         = mean(wind_speed,         na.rm = TRUE),
+    precip_mm          = mean(precip_mm,          na.rm = TRUE),
+    humidity_pct       = mean(humidity_pct,       na.rm = TRUE),
+    temperature_c      = mean(temperature_c,      na.rm = TRUE),
+    longitude          = first(longitude),
+    latitude           = first(latitude),
+    .groups = "drop"
+  ) |>
+  drop_na()
 
 # Fit propensity score model
-
-psm_formula \<- treated_city \~ gdp_growth_pct + share_primary_pct + share_secondary_pct + population_10k + urban_road_10k_m2 + pm25 + green_coverage_pct + wind_speed + precip_mm + humidity_pct + temperature_c + longitude + latitude
+psm_formula <- treated_city ~ gdp_growth_pct + share_primary_pct +
+  share_secondary_pct + population_10k + urban_road_10k_m2 +
+  pm25 + green_coverage_pct + wind_speed + precip_mm +
+  humidity_pct + temperature_c + longitude + latitude
 
 # Four matching methods to mirror the paper
+run_psm_did <- function(method, ...) {
+  match_out <- matchit(
+    psm_formula,
+    data     = city_baseline,
+    method   = method,
+    distance = "glm",
+    ...
+  )
 
-run_psm_did \<- function(method, ...) { match_out \<- matchit( psm_formula, data = city_baseline, method = method, distance = "glm", ... )
+  matched_ids <- match.data(match_out)$city_id
+  hsr_matched <- hsr |> filter(city_id %in% matched_ids)
 
-matched_ids \<- match.data(match_out)\$city_id hsr_matched \<- hsr \|\> filter(city_id %in% matched_ids)
-
-feols( avian_increment_ratio_natl \~ hsr + ..controls \| city_id + year, data = hsr_matched, cluster = \~city_id ) }
+  feols(
+    avian_increment_ratio_natl ~ hsr + ..controls |
+      city_id + year,
+    data = hsr_matched, cluster = ~city_id
+  )
+}
 
 # k-nearest neighbors (k=3, k=5)
-
-m_nn3 \<- run_psm_did("nearest", ratio = 3) m_nn5 \<- run_psm_did("nearest", ratio = 5)
+m_nn3    <- run_psm_did("nearest", ratio = 3)
+m_nn5    <- run_psm_did("nearest", ratio = 5)
 
 # Radius matching: nearest neighbor within 0.05 SD of propensity score
-
-m_radius \<- run_psm_did("nearest", caliper = 0.05)
+m_radius <- run_psm_did("nearest", caliper = 0.05)
 
 # Optimal full matching (closest equivalent to kernel matching)
+m_kernel <- run_psm_did("full")
 
-m_kernel \<- run_psm_did("full")
+cat("\n=== Table 9: PSM-DID ===\n\n")
+etable(
+  m_preferred, m_nn3, m_nn5, m_radius, m_kernel,
+  keep    = "hsr",
+  headers = c("Full sample", "k-NN (k=3)", "k-NN (k=5)",
+              "Radius", "Kernel (approx)"),
+  digits  = 4,
+  fitstat = c("n", "r2")
+)
 
-cat("\n=== Table 9: PSM-DID ===\n\n") etable( m_preferred, m_nn3, m_nn5, m_radius, m_kernel, keep = "hsr", headers = c("Full sample", "k-NN (k=3)", "k-NN (k=5)", "Radius", "Kernel (approx)"), digits = 4, fitstat = c("n", "r2") )
+
+```
+
+3. Critical Evaluation
+Somewhere in the write-up (or as a closing section), address each of the following:
+
+Causal identification: Is the identification strategy credible? What would have to be true for the estimates to be causal?
+Statistical assumptions: Are key assumptions (parallel trends, exclusion restriction, etc.) tested or defended? Do you find the evidence convincing?
+Sampling & external validity: Who is in the sample? To whom can results be generalized?
+Measurement: Are the outcome and treatment variables measured accurately and without systematic bias?
+Other limitations: Anything else that affects how much weight you would put on the study’s conclusions?

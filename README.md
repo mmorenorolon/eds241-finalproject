@@ -12,7 +12,7 @@ The paper examines whether China’s rapid HSR expansion slowed the discovery of
 ├── data/
 │   └── xie2025_simulated_panel.csv   # Simulated panel dataset 
 │
-├── blog-post.wmd
+├── blog-post.qmd
 │
 └── README.md
 ```
